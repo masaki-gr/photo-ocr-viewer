@@ -27,9 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .image_store import list_supported_images
 from .ocr import OCREngine, OCRLine
-
-SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 
 class ClickablePolygonItem(QGraphicsPolygonItem):
@@ -197,13 +196,11 @@ class MainWindow(QMainWindow):
             return
 
         folder = Path(path)
-        images = sorted(
-            [
-                p
-                for p in folder.iterdir()
-                if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
-            ]
-        )
+        try:
+            images = list_supported_images(folder)
+        except NotADirectoryError as exc:
+            QMessageBox.critical(self, "Invalid folder", str(exc))
+            return
 
         if not images:
             QMessageBox.warning(self, "No images", "No png/jpg/jpeg files found in this folder.")

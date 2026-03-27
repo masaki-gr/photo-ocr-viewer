@@ -1,51 +1,81 @@
 from __future__ import annotations
 
-import os
-os.environ["FLAGS_use_mkldnn"] = "0"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from pathlib import Path
 
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
-from paddleocr import PaddleOCR
+import pytest
+
+from photo_ocr_viewer.ocr import OCREngine, OCRLine
 
 
-Point = Tuple[float, float]
+class FakeOCRBackend:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def ocr(self, image_path: str, cls: bool = True):
+        self.calls.append((image_path, cls))
+        return self.response
 
 
-@dataclass
-class OCRLine:
-    points: List[Point]
-    text: str
-    score: float
+@pytest.fixture
+def sample_image_path() -> Path:
+    return Path("tests/data/No.263.png").resolve()
 
 
-class OCREngine:
-    """Thin wrapper around PaddleOCR with in-memory cache."""
+def test_single_image_ocr_processing(sample_image_path: Path) -> None:
+    backend = FakeOCRBackend(
+        [[[[[10, 10], [40, 10], [40, 30], [10, 30]], ["hello", 0.98]]]]
+    )
+    engine = OCREngine(ocr_backend=backend)
 
-    def __init__(self, lang: str = "japan") -> None:
-        self._ocr = PaddleOCR(
-    		use_angle_cls=True,
-    		lang=lang
-	)
-        self._cache: Dict[str, List[OCRLine]] = {}
+    lines = engine.recognize(str(sample_image_path))
 
-    def recognize(self, image_path: str, force: bool = False) -> List[OCRLine]:
-        if not force and image_path in self._cache:
-            return self._cache[image_path]
+    assert len(lines) == 1
+    assert isinstance(lines[0], OCRLine)
+    assert lines[0].text == "hello"
+    assert lines[0].score == pytest.approx(0.98)
+    assert backend.calls == [(str(sample_image_path), True)]
 
-        result = self._ocr.ocr(image_path, cls=True)
-        lines: List[OCRLine] = []
 
-        if result and result[0]:
-            for item in result[0]:
-                box = item[0]
-                text, score = item[1]
-                points = [(float(x), float(y)) for x, y in box]
-                lines.append(OCRLine(points=points, text=text, score=float(score)))
+def test_invalid_path_raises_file_not_found() -> None:
+    backend = FakeOCRBackend([])
+    engine = OCREngine(ocr_backend=backend)
 
-        self._cache[image_path] = lines
-        return lines
+    with pytest.raises(FileNotFoundError):
+        engine.recognize("tests/data/not_found.png")
 
-    def clear_cache_for(self, image_path: str) -> None:
-        self._cache.pop(image_path, None)
+    assert backend.calls == []
+
+
+def test_no_ocr_results_returns_empty_lines(sample_image_path: Path) -> None:
+    backend = FakeOCRBackend([None])
+    engine = OCREngine(ocr_backend=backend)
+
+    lines = engine.recognize(str(sample_image_path))
+
+    assert lines == []
+
+
+def test_same_file_reuses_cache(sample_image_path: Path) -> None:
+    backend = FakeOCRBackend(
+        [[[[[0, 0], [1, 0], [1, 1], [0, 1]], ["cached", 1.0]]]]
+    )
+    engine = OCREngine(ocr_backend=backend)
+
+    first = engine.recognize(str(sample_image_path))
+    second = engine.recognize(str(sample_image_path))
+
+    assert first == second
+    assert len(backend.calls) == 1
+
+
+def test_force_option_bypasses_cache(sample_image_path: Path) -> None:
+    backend = FakeOCRBackend(
+        [[[[[0, 0], [2, 0], [2, 2], [0, 2]], ["forced", 0.9]]]]
+    )
+    engine = OCREngine(ocr_backend=backend)
+
+    engine.recognize(str(sample_image_path))
+    engine.recognize(str(sample_image_path), force=True)
+
+    assert len(backend.calls) == 2
